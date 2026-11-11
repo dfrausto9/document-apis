@@ -15,7 +15,7 @@ from reportlab.pdfgen import canvas
 from reportlab.platypus import PageBreak, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-import pdf_reader  # noqa: E402
+from app import pdf_reader  # noqa: E402
 
 app = FastAPI()
 app.include_router(pdf_reader.router)
