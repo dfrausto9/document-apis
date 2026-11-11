@@ -139,15 +139,23 @@ def _score(b: tuple, q: list[str], a: list[str]) -> int:
     return 0
 
 
+def _near_score(b: tuple, q: list[str], a: list[str]) -> int:
+    """Looser match for old spellings: all but one search word in the title or author
+    ("tao te ching" finds "The Tao Teh King"). Only used when nothing matches exactly."""
+    _, _, _, _, _, t_hay, p_hay, _ = b
+    if a and not all(_has(p_hay, w) for w in a):
+        return 0
+    hits = sum(_has(t_hay, w) or _has(p_hay, w) for w in q)
+    title_hits = sum(_has(t_hay, w) for w in q)
+    return 20 + 5 * hits if hits >= len(q) - 1 and title_hits >= 1 else 0
+
+
 def search(q: str, author: str | None, language: str | None, limit: int) -> list[tuple]:
     qw, aw = _words(q), _words(author or "")
-    scored = []
-    for b in _books:
-        if language and language not in b[2].split(";"):
-            continue
-        s = _score(b, qw, aw)
-        if s:
-            scored.append((s, -len(b[1]), b))
+    books = [b for b in _books if not language or language in b[2].split(";")]
+    scored = [(s, -len(b[1]), b) for b in books if (s := _score(b, qw, aw))]
+    if not scored and len(qw) >= 2:
+        scored = [(s, -len(b[1]), b) for b in books if (s := _near_score(b, qw, aw))]
     scored.sort(key=lambda x: (x[0], x[1]), reverse=True)
     return [x[2] for x in scored[: limit * 3]]
 

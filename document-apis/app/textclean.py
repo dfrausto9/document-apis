@@ -57,6 +57,17 @@ def to_paragraphs(text: str) -> list[str]:
     return [p for p in paras if p]
 
 
+_CREDIT = re.compile(r"^(produced by|e-?text prepared by|transcribed from|this e-?book was produced)\b", re.I)
+
+
+def drop_credits(paras: list[str]) -> list[str]:
+    """Remove the volunteer 'Produced by …' credit lines at the very start."""
+    i = 0
+    while i < min(len(paras), 4) and _CREDIT.match(paras[i]):
+        i += 1
+    return paras[i:]
+
+
 def find_chapters(paras: list[str]) -> list[dict]:
     chapters = []
     for i, p in enumerate(paras):
@@ -83,7 +94,7 @@ def paginate(paras: list[str], words_per_page: int = 900) -> list[list[str]]:
 
 def clean_book(raw: str, words_per_page: int = 900) -> dict:
     body = strip_gutenberg_boilerplate(raw)
-    paras = to_paragraphs(body)
+    paras = drop_credits(to_paragraphs(body))
     pages = paginate(paras, words_per_page)
     # map each chapter to the page it starts on
     starts, idx = [], 0
