@@ -17,6 +17,7 @@ from fastapi.responses import JSONResponse
 from . import gutenberg, sources
 from .cache import TTLCache
 from .textclean import clean_book
+from .pdf_reader import router as pdf_router
 
 app = FastAPI(
     title="Public Domain Book Finder",
@@ -25,6 +26,7 @@ app = FastAPI(
                 "and read them as clean, ad-free text.",
 )
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["GET"], allow_headers=["*"])
+app.include_router(pdf_router)
 
 log = logging.getLogger("bookfinder")
 logging.basicConfig(level=logging.INFO)
