@@ -199,7 +199,7 @@ def normalize_librivox(b: dict) -> dict:
         "subjects": [g.get("name", "").lstrip("*") for g in (b.get("genres") or [])][:9],
         "summary": _plain(b.get("description")),
         "cover": None,
-        "read_online": b.get("url_librivox") or b.get("url_iarchive"),
+        "read_online": b.get("url_librivox") or b.get("url_iarchive") or None,
         "clean_reader": None,
         "downloads": {k: v for k, v in {
             "mp3_zip": b.get("url_zip_file"),
