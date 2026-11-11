@@ -1,26 +1,23 @@
 """Offline tests: every outside library is mocked with made-up sample data."""
+import gzip
+
 import httpx
 import pytest
 import respx
 from fastapi.testclient import TestClient
 
-from app import main
+from app import gutenberg, main
 from app.main import app
 
 client = TestClient(app)
 
-GUT = {"count": 2, "results": [
-    {"id": 101, "title": "The Sample Way", "authors": [{"name": "Writer, Old", "birth_year": 1800, "death_year": 1870}],
-     "translators": [], "subjects": ["Philosophy"], "languages": ["en"], "copyright": False,
-     "summaries": ["A <b>short</b> made-up summary."],
-     "formats": {"text/html": "https://www.gutenberg.org/ebooks/101.html.images",
-                 "application/epub+zip": "https://www.gutenberg.org/ebooks/101.epub3.images",
-                 "text/plain; charset=us-ascii": "https://www.gutenberg.org/ebooks/101.txt.utf-8",
-                 "image/jpeg": "https://www.gutenberg.org/cache/epub/101/pg101.cover.medium.jpg"},
-     "download_count": 5000},
-    {"id": 102, "title": "Still Protected", "authors": [], "translators": [], "subjects": [], "languages": ["en"],
-     "copyright": True, "formats": {}, "download_count": 3},
-]}
+CATALOG = """Text#,Type,Issued,Title,Language,Authors,Subjects,LoCC,Bookshelves
+101,Text,2001-01-01,The Sample Way,en,"Writer, Old, 1800-1870; Helper, Kind, 1850-1920 [Translator]",Philosophy; Made-up topics,B,Philosophy
+102,Text,2002-01-01,Still Protected,en,"Person, New, 1950-",Fiction,PS,
+103,Sound,2003-01-01,The Sample Way (audio),en,"Writer, Old, 1800-1870",,,
+""" + "".join(f"{2000+i},Text,2010-01-01,Filler Title {i},fr,\"Nobody, A\",,,\n" for i in range(1100))
+RDF_PD = "<rdf><dcterms:rights>Public domain in the USA.</dcterms:rights></rdf>"
+RDF_C = "<rdf><dcterms:rights>Copyrighted. Read the copyright notice inside this book for details.</dcterms:rights></rdf>"
 OL = {"numFound": 2, "docs": [
     {"key": "/works/OL1W", "title": "The Sample Way", "author_name": ["Old Writer"], "first_publish_year": 1850,
      "ia": ["sampleway00writ"], "ebook_access": "public", "language": ["eng"], "cover_i": 42},
@@ -64,10 +61,19 @@ More license text that should be removed.
 @pytest.fixture(autouse=True)
 def fresh():
     main.search_cache.clear(); main.book_cache.clear(); main.text_cache.clear()
+    gutenberg._books.clear(); gutenberg._by_id.clear(); gutenberg._rights.clear()
+    gutenberg._loaded_at = 0
+
+
+def mock_pg(router):
+    router.get("https://www.gutenberg.org/cache/epub/feeds/pg_catalog.csv.gz").mock(
+        return_value=httpx.Response(200, content=gzip.compress(CATALOG.encode())))
+    router.get("https://www.gutenberg.org/cache/epub/101/pg101.rdf").mock(return_value=httpx.Response(200, text=RDF_PD))
+    router.get("https://www.gutenberg.org/cache/epub/102/pg102.rdf").mock(return_value=httpx.Response(200, text=RDF_C))
 
 
 def mock_all(router):
-    router.get("https://gutendex.com/books/").mock(return_value=httpx.Response(200, json=GUT))
+    mock_pg(router)
     router.get("https://openlibrary.org/search.json").mock(return_value=httpx.Response(200, json=OL))
     router.get("https://librivox.org/api/feed/audiobooks").mock(return_value=httpx.Response(200, json=LV))
 
@@ -82,8 +88,9 @@ def test_search_merges_and_filters():
     assert ids == ["gutenberg:101"]  # 3 copies folded into one, copyrighted + borrowable dropped
     main_book = body["results"][0]
     assert {a["id"] for a in main_book["also_available"]} == {"openlibrary:OL1W", "librivox:77"}
-    assert main_book["downloads"]["epub"].endswith("epub3.images")
-    assert main_book["summary"] == "A short made-up summary."
+    assert main_book["downloads"]["epub"].endswith("101.epub3.images")
+    assert main_book["authors"][0] == {"name": "Writer, Old", "born": 1800, "died": 1870}
+    assert main_book["translators"] == ["Helper, Kind"]
     assert body["sources"] == {"gutenberg": "1 found", "openlibrary": "1 found", "librivox": "1 found"}
 
 
@@ -99,7 +106,7 @@ def test_audio_only():
 
 @respx.mock
 def test_one_source_down_still_works():
-    respx.get("https://gutendex.com/books/").mock(side_effect=httpx.ConnectTimeout("slow"))
+    respx.get(url__startswith="https://www.gutenberg.org/").mock(side_effect=httpx.ConnectTimeout("slow"))
     respx.get("https://openlibrary.org/search.json").mock(return_value=httpx.Response(200, json=OL))
     respx.get("https://librivox.org/api/feed/audiobooks").mock(return_value=httpx.Response(404))
     r = client.get("/search", params={"q": "sample"})
@@ -117,8 +124,7 @@ def test_search_needs_query():
 
 @respx.mock
 def test_book_and_copyright_block():
-    respx.get("https://gutendex.com/books/101").mock(return_value=httpx.Response(200, json=GUT["results"][0]))
-    respx.get("https://gutendex.com/books/102").mock(return_value=httpx.Response(200, json=GUT["results"][1]))
+    mock_pg(respx)
     assert client.get("/book/gutenberg:101").json()["title"] == "The Sample Way"
     assert client.get("/book/gutenberg:102").status_code == 451
     assert client.get("/book/nothing").status_code == 400
@@ -126,7 +132,7 @@ def test_book_and_copyright_block():
 
 @respx.mock
 def test_read_clean_text():
-    respx.get("https://gutendex.com/books/101").mock(return_value=httpx.Response(200, json=GUT["results"][0]))
+    mock_pg(respx)
     respx.get("https://www.gutenberg.org/ebooks/101.txt.utf-8").mock(return_value=httpx.Response(200, text=RAW))
     r = client.get("/read/gutenberg:101", params={"words_per_page": 200})
     assert r.status_code == 200, r.text
@@ -143,3 +149,22 @@ def test_proxy_secret(monkeypatch):
     monkeypatch.setattr(main, "PROXY_SECRET", "s3cret")
     assert client.get("/search", params={"q": "x"}).status_code == 403
     assert client.get("/health").status_code == 200
+
+
+@respx.mock
+def test_catalog_search_ranking_and_filters():
+    mock_pg(respx)
+    r = client.get("/search", params={"q": "sample way", "source": "gutenberg"}).json()
+    assert [b["id"] for b in r["results"]] == ["gutenberg:101"]  # audio row skipped
+    r = client.get("/search", params={"q": "protected", "source": "gutenberg"}).json()
+    assert r["results"] == []  # copyrighted per its RDF
+    r = client.get("/search", params={"author": "old writer", "source": "gutenberg"}).json()
+    assert r["results"][0]["id"] == "gutenberg:101"
+    r = client.get("/search", params={"q": "made-up topics", "source": "gutenberg"}).json()
+    assert r["results"][0]["id"] == "gutenberg:101"  # subject match
+    r = client.get("/search", params={"q": "sample", "language": "fr", "source": "gutenberg"}).json()
+    assert r["results"] == []
+
+
+def test_head_root():
+    assert client.head("/").status_code == 200
