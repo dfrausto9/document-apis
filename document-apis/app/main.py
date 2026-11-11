@@ -4,6 +4,7 @@ Search 3 free, legal libraries at once (Project Gutenberg, Open Library / Intern
 LibriVox) and read public-domain books as clean text: no ads, no pop-ups, no sign-in.
 """
 import asyncio
+import logging
 import os
 import re
 import unicodedata
@@ -13,7 +14,7 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from . import sources
+from . import gutenberg, sources
 from .cache import TTLCache
 from .textclean import clean_book
 
@@ -24,6 +25,9 @@ app = FastAPI(
                 "and read them as clean, ad-free text.",
 )
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["GET"], allow_headers=["*"])
+
+log = logging.getLogger("bookfinder")
+logging.basicConfig(level=logging.INFO)
 
 PROXY_SECRET = os.getenv("RAPIDAPI_PROXY_SECRET", "")
 OPEN_PATHS = {"/", "/health", "/docs", "/openapi.json", "/redoc"}
@@ -37,6 +41,18 @@ SOURCES = {
     "openlibrary": sources.search_openlibrary,
     "librivox": sources.search_librivox,
 }
+
+
+@app.on_event("startup")
+async def warm_catalog():
+    """Download the Project Gutenberg catalog in the background so the first search is fast."""
+    async def _load():
+        try:
+            async with sources.client() as http:
+                await gutenberg.load_catalog(http)
+        except Exception as e:
+            log.warning("Catalog warm-up failed (will retry on first search): %s", e)
+    asyncio.create_task(_load())
 
 
 @app.middleware("http")
@@ -94,7 +110,7 @@ def merge_results(groups: list[list[dict]]) -> list[dict]:
     return out
 
 
-@app.get("/")
+@app.api_route("/", methods=["GET", "HEAD"])
 async def root():
     return {
         "name": "Public Domain Book Finder",
@@ -107,9 +123,9 @@ async def root():
     }
 
 
-@app.get("/health")
+@app.api_route("/health", methods=["GET", "HEAD"])
 async def health():
-    return {"ok": True}
+    return {"ok": True, "gutenberg_books": gutenberg.catalog_size()}
 
 
 @app.get("/search")
@@ -148,6 +164,7 @@ async def search(
     groups = []
     for name, res in zip(wanted, outcomes):
         if isinstance(res, Exception):
+            log.warning("source %s failed: %s: %s", name, res.__class__.__name__, res)
             status[name] = "unavailable"
             groups.append([])
         else:
@@ -188,7 +205,8 @@ async def _lookup(src: str, raw: str) -> dict:
                 book = await sources.get_openlibrary(http, raw)
             else:
                 book = await sources.get_librivox(http, raw)
-    except httpx.HTTPError:
+    except (httpx.HTTPError, RuntimeError) as e:
+        log.warning("lookup %s:%s failed: %s: %s", src, raw, type(e).__name__, e)
         raise HTTPException(503, "That library didn't answer just now. Please try again in a minute.")
     if book and book.get("_copyrighted"):
         raise HTTPException(451, "This title is still under copyright, so it isn't offered here.")
@@ -225,7 +243,8 @@ async def read(
         try:
             async with sources.client() as http:
                 text = await sources.fetch_gutenberg_text(http, int(raw), info["downloads"].get("txt"))
-        except RuntimeError:
+        except RuntimeError as e:
+            log.warning("text download for gutenberg:%s failed: %s", raw, e)
             raise HTTPException(503, "Couldn't download that book's text just now. Please try again soon.")
         cleaned = clean_book(text, words_per_page)
         text_cache.set(f"{raw}|{words_per_page}", cleaned)

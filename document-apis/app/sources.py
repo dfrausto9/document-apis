@@ -1,16 +1,18 @@
 """The three free, legal sources. Each one returns books in the same shape.
 
-- Project Gutenberg (through the Gutendex catalog API), public-domain titles only
+- Project Gutenberg (its official catalog file), public-domain titles only
 - Open Library / Internet Archive, "public" full-access scans only (no lending-library books)
 - LibriVox, public-domain audiobooks read by volunteers
 """
+import asyncio
 import os
 import re
 from html import unescape
 
 import httpx
 
-GUTENDEX = os.getenv("GUTENDEX_URL", "https://gutendex.com")
+from . import gutenberg
+
 OPENLIB = "https://openlibrary.org"
 LIBRIVOX = "https://librivox.org/api/feed/audiobooks"
 GUTENBERG_FILES = os.getenv("GUTENBERG_MIRROR", "https://www.gutenberg.org")
@@ -53,69 +55,31 @@ def lang_code(lang: str | None) -> str | None:
     return _LANG_NAMES.get(lang, lang[:2] if len(lang) > 2 else lang)
 
 
-def _gutenberg_formats(formats: dict) -> dict:
-    out = {}
-    for mime, url in (formats or {}).items():
-        if mime.startswith("application/epub"):
-            out.setdefault("epub", url)
-        elif mime.startswith("text/plain"):
-            out.setdefault("txt", url)
-        elif mime.startswith("text/html"):
-            out.setdefault("html", url)
-        elif mime.startswith("application/x-mobipocket"):
-            out.setdefault("kindle", url)
-        elif mime.startswith("image/"):
-            out.setdefault("cover", url)
-    return out
-
-
-def normalize_gutenberg(b: dict) -> dict:
-    f = _gutenberg_formats(b.get("formats", {}))
-    gid = b.get("id")
-    return {
-        "id": f"gutenberg:{gid}",
-        "source": "Project Gutenberg",
-        "kind": "text",
-        "title": (b.get("title") or "").strip(),
-        "authors": [
-            {"name": a.get("name"), "born": a.get("birth_year"), "died": a.get("death_year")}
-            for a in b.get("authors", [])
-        ],
-        "translators": [t.get("name") for t in b.get("translators", []) if t.get("name")],
-        "languages": b.get("languages", []),
-        "year": None,
-        "subjects": (b.get("subjects") or [])[:9],
-        "summary": _plain(" ".join(b.get("summaries") or [])),
-        "cover": f.pop("cover", None),
-        "read_online": f.get("html") or f"https://www.gutenberg.org/ebooks/{gid}",
-        "clean_reader": f"/read/gutenberg:{gid}",
-        "downloads": {k: v for k, v in f.items() if k in ("epub", "txt", "html", "kindle")},
-        "popularity": b.get("download_count"),
-        "rights": "Public domain in the USA (Project Gutenberg)",
-    }
-
-
 async def search_gutenberg(http: httpx.AsyncClient, q: str, author: str | None, language: str | None, limit: int):
-    terms = " ".join(x for x in (q, author) if x)
-    params = {"search": terms, "copyright": "false"}
-    code = lang_code(language)
-    if code:
-        params["languages"] = code
-    r = await http.get(f"{GUTENDEX}/books/", params=params)
-    r.raise_for_status()
-    results = r.json().get("results", [])
-    return [normalize_gutenberg(b) for b in results if b.get("copyright") is not True][:limit]
+    await gutenberg.load_catalog(http)
+    candidates = await asyncio.to_thread(gutenberg.search, q, author, lang_code(language), limit)
+    out = []
+    # confirm public-domain status from each book's own metadata, a few at a time
+    for i in range(0, len(candidates), 6):
+        if len(out) >= limit:
+            break
+        batch = candidates[i:i + 6]
+        checks = await asyncio.gather(*(gutenberg.is_public_domain(http, b[0]) for b in batch),
+                                      return_exceptions=True)
+        for b, ok in zip(batch, checks):
+            if ok is True:
+                out.append(gutenberg.to_result(b))
+    return out[:limit]
 
 
 async def get_gutenberg(http: httpx.AsyncClient, gid: int) -> dict | None:
-    r = await http.get(f"{GUTENDEX}/books/{gid}")
-    if r.status_code == 404:
+    await gutenberg.load_catalog(http)
+    b = gutenberg.get(gid)
+    if not b:
         return None
-    r.raise_for_status()
-    b = r.json()
-    if b.get("copyright") is True:
+    if not await gutenberg.is_public_domain(http, gid):
         return {"_copyrighted": True}
-    return normalize_gutenberg(b)
+    return gutenberg.to_result(b)
 
 
 async def fetch_gutenberg_text(http: httpx.AsyncClient, gid: int, txt_url: str | None) -> str:
