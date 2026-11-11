@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: document-apis
+    runtime: python
+    plan: starter
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.7
+      - key: RAPIDAPI_PROXY_SECRET
+        sync: false
+      - key: CONTACT_EMAIL
+        sync: false
