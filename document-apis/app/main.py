@@ -59,7 +59,7 @@ async def warm_catalog():
 
 @app.middleware("http")
 async def rapidapi_guard(request: Request, call_next):
-        """When RAPIDAPI_PROXY_SECRET is set, only requests coming through RapidAPI are allowed.
+"""When RAPIDAPI_PROXY_SECRET is set, only requests coming through RapidAPI are allowed.
 
     Each RapidAPI listing has its own secret, so several can be given, separated by commas.
     """
