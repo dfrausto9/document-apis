@@ -18,6 +18,7 @@ from . import gutenberg, sources
 from .cache import TTLCache
 from .textclean import clean_book
 from .pdf_reader import router as pdf_router
+from .summarizer import router as summarize_router
 
 app = FastAPI(
     title="Public Domain Book Finder",
@@ -25,8 +26,9 @@ app = FastAPI(
     description="Find free, legal, public-domain books and audiobooks across 3 libraries, "
                 "and read them as clean, ad-free text.",
 )
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["GET"], allow_headers=["*"])
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["GET", "POST"], allow_headers=["*"])
 app.include_router(pdf_router)
+app.include_router(summarize_router)
 
 log = logging.getLogger("bookfinder")
 logging.basicConfig(level=logging.INFO)
@@ -124,6 +126,8 @@ async def root():
             "/search": "Search 3 free libraries at once. ?q=tao te ching&type=all&limit=9",
             "/book/{id}": "Details and every free format for one book, e.g. /book/gutenberg:216",
             "/read/{id}": "Clean, ad-free reading pages, e.g. /read/gutenberg:216?page=1",
+            "/pdf/read, /pdf/chapters, /pdf/info": "Clean PDF Reader",
+            "/summarize/text, /summarize/url, /summarize/file": "Doc Summarizer",
         },
         "sources": ["Project Gutenberg", "Open Library / Internet Archive (public access only)", "LibriVox"],
     }
