@@ -336,7 +336,17 @@ def summarize_sections(
     return body
 
 
-def _options(length: str | None, sentences: int | None) -> int:
+def _options(length: str | None, sentences) -> int:
+    """sentences wins over length. The RapidAPI playground sends '{}' for empty
+    optional numbers, so blank-looking values are treated as not set."""
+    if isinstance(sentences, str):
+        raw = sentences.strip().lower()
+        if raw in ("", "{}", "null", "none", "undefined"):
+            sentences = None
+        elif raw.isdigit() and 1 <= int(raw) <= 30:
+            sentences = int(raw)
+        else:
+            raise _fail(400, "bad_sentences", "sentences should be a number from 1 to 30.")
     if sentences:
         return sentences
     return LENGTHS[length or "medium"]
@@ -526,7 +536,7 @@ def _sections_from_doc(doc) -> list[dict]:
 
 LENGTH = Query("medium", pattern="^(short|medium|long)$",
                description="short (3 sentences), medium (5) or long (8)")
-SENTENCES = Query(None, ge=1, le=30, description="Exact number of summary sentences (overrides length)")
+SENTENCES = Query(None, description="Exact number of summary sentences, 1 to 30 (overrides length)")
 KEY_POINTS = Query(5, ge=0, le=15, description="How many key points to return")
 KEYWORDS = Query(10, ge=0, le=30, description="How many keywords to return")
 BY_SECTION = Query(True, description="Also summarize each chapter or section")
@@ -559,7 +569,7 @@ async def summarize_text(body: TextIn):
 async def summarize_url(
     url: str = Query(..., description="Link to a web page (article, blog post, docs) or a PDF"),
     length: str = LENGTH,
-    sentences: int | None = SENTENCES,
+    sentences: str | None = SENTENCES,
     key_points: int = KEY_POINTS,
     keywords: int = KEYWORDS,
     by_section: bool = BY_SECTION,
@@ -586,7 +596,7 @@ async def summarize_url(
 async def summarize_file(
     file: UploadFile = File(..., description="A PDF, .txt or .md file"),
     length: str = LENGTH,
-    sentences: int | None = SENTENCES,
+    sentences: str | None = SENTENCES,
     key_points: int = KEY_POINTS,
     keywords: int = KEYWORDS,
     by_section: bool = BY_SECTION,
