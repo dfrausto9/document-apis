@@ -61,6 +61,7 @@ towards two under until up upon us use used using very via was wasn't way we we'
 we've well were weren't what what's whatever when when's where where's whether which while who
 who's whole whom whose why why's will with within without won't would wouldn't yes yet you
 you'd you'll you're you've your yours yourself yourselves
+retrieved archived doi isbn issn pmid pmc jstor ibid http https www com org
 """.split())
 
 _ABBREV = {
@@ -125,7 +126,11 @@ def sections_from_text(text: str) -> list[dict]:
     return [s for s in sections if s["paragraphs"]]
 
 
+_CITE = re.compile(r"\[(\d+|[a-z]|citation needed|note \d+|nb \d+)\]", re.I)
+
+
 def split_sentences(paragraph: str) -> list[str]:
+    paragraph = _CITE.sub("", paragraph)
     paragraph = re.sub(r"\s+", " ", paragraph).strip()
     if not paragraph:
         return []
@@ -205,7 +210,7 @@ def _score(sentences: list[_Sentence], sections: list[dict]) -> Counter:
     total = len(sentences)
     for s in sentences:
         n_words = len(s.text.split())
-        if not s.terms or n_words < 5:
+        if not s.terms or n_words < 6:
             s.score = 0.0
             continue
         base = sum(weight.get(t, 0) for t in s.terms) / math.sqrt(len(s.terms))
@@ -215,6 +220,8 @@ def _score(sentences: list[_Sentence], sections: list[dict]) -> Counter:
             base *= 1.1                       # the opening usually frames the document
         if title_terms & s.terms:
             base *= 1.1
+        if n_words < 10:
+            base *= 0.5                       # very short lines are usually titles or captions
         if n_words > 60:
             base *= 0.75                      # very long sentences make poor summaries
         if s.text.endswith("?"):
@@ -388,7 +395,8 @@ class _PageText(HTMLParser):
     BLOCKS = {"p", "li", "blockquote", "h1", "h2", "h3", "h4", "pre", "td", "dd"}
     HEADINGS = {"h1", "h2", "h3"}
     JUNK = re.compile(r"(comment|share|social|related|newsletter|subscribe|cookie|promo|advert|"
-                      r"sidebar|menu|breadcrumb|footer|popup|modal)", re.I)
+                      r"sidebar|menu|breadcrumb|footer|popup|modal|reference|reflist|citation|"
+                      r"navbox|catlinks|infobox|toc\b|mw-editsection|hatnote|metadata|noprint)", re.I)
 
     def __init__(self):
         super().__init__(convert_charrefs=True)
@@ -403,7 +411,8 @@ class _PageText(HTMLParser):
 
     def handle_starttag(self, tag, attrs):
         a = dict(attrs)
-        junk = bool(self.JUNK.search(f"{a.get('class', '')} {a.get('id', '')}")) and tag in {"div", "section", "ul", "aside"}
+        junk = bool(self.JUNK.search(f"{a.get('class', '')} {a.get('id', '')}")) and tag in {
+            "div", "section", "ul", "ol", "aside", "table", "span", "sup", "nav"}
         skip = tag in self.SKIP or junk or a.get("aria-hidden") == "true" or "hidden" in a
         if tag in {"br", "img", "hr", "meta", "link", "input"}:
             return
@@ -447,6 +456,11 @@ class _PageText(HTMLParser):
         self.current = None
 
 
+_END_MATTER = re.compile(
+    r"^\s*(references|notes|citations|sources|bibliography|further reading|external links|"
+    r"see also|footnotes|works cited|related (articles|posts)|share this|comments?)\s*$", re.I)
+
+
 def sections_from_html(raw: str) -> tuple[str | None, list[dict]]:
     parser = _PageText()
     try:
@@ -457,7 +471,14 @@ def sections_from_html(raw: str) -> tuple[str | None, list[dict]]:
     parser._close()
     title = re.sub(r"\s+", " ", html.unescape(parser.title)).strip() or None
     sections: list[dict] = [{"title": None, "paragraphs": []}]
+    skipping = False
     for tag, text in parser.items:
+        if tag in _PageText.HEADINGS:
+            skipping = bool(_END_MATTER.match(text))
+            if skipping:
+                continue
+        elif skipping or text.startswith(("↑", "^")):
+            continue
         if tag in _PageText.HEADINGS:
             if tag == "h1" and not sections[-1]["paragraphs"] and sections[-1]["title"] is None:
                 title = title or text
