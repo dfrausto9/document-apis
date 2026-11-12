@@ -238,6 +238,11 @@ def _join(prev: str, nxt: str, stats: Counter) -> str:
         and prev[-2].isalpha()
         and nxt[:1].islower()
     ):
+        last_word = prev.rsplit(None, 1)[-1]
+        if "-" in last_word[:-1]:
+            # A compound like "state-of-the-" + "art": keep the hyphen, it belongs there.
+            stats["lines_joined"] += 1
+            return prev + nxt
         stats["hyphens_fixed"] += 1
         return prev[:-1] + nxt
     stats["lines_joined"] += 1
@@ -271,12 +276,30 @@ def _extract_blocks(pdf) -> tuple[list[Block], Counter, float]:
     n = len(raw_pages)
     repeated: set[str] = set()
     if n >= 3:
+        edges = [{_norm_repeat(l["text"]) for l in lines[:EDGE_LINES] + lines[-EDGE_LINES:]} - {""}
+                 for lines in raw_pages]
+        # 1. Lines repeated across the whole document.
         counts: Counter = Counter()
-        for lines in raw_pages:
-            edge = lines[:EDGE_LINES] + lines[-EDGE_LINES:]
-            counts.update({_norm_repeat(l["text"]) for l in edge})
+        for e in edges:
+            counts.update(e)
         threshold = max(2, math.ceil(n * 0.4))
-        repeated = {k for k, c in counts.items() if c >= threshold and k}
+        repeated = {k for k, c in counts.items() if c >= threshold}
+        # 2. Books often alternate headers: the book title on even pages and the
+        #    chapter title on odd pages. Count each side on its own.
+        for parity in (0, 1):
+            side = edges[parity::2]
+            if len(side) >= 2:
+                side_counts: Counter = Counter()
+                for e in side:
+                    side_counts.update(e)
+                side_threshold = max(2, math.ceil(len(side) * 0.4))
+                repeated |= {k for k, c in side_counts.items() if c >= side_threshold}
+        # 3. A short chapter's title header only shows up on a few pages, so also
+        #    catch the same edge line on nearby pages (next page or the one after).
+        for i, e in enumerate(edges):
+            for j in (i + 1, i + 2):
+                if j < n:
+                    repeated |= {k for k in e & edges[j] if len(k) >= 4}
 
     blocks: list[Block] = []
     gaps: list[float] = []
