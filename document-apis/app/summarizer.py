@@ -216,7 +216,9 @@ def _score(sentences: list[_Sentence], sections: list[dict]) -> Counter:
         base = sum(weight.get(t, 0) for t in s.terms) / math.sqrt(len(s.terms))
         if s.para_pos == 0:
             base *= 1.15                      # topic sentences
-        if s.index < max(3, total * 0.05):
+        if s.index < 2:
+            base *= 1.4                       # the lead sentence usually says what it's about
+        elif s.index < max(3, total * 0.05):
             base *= 1.1                       # the opening usually frames the document
         if title_terms & s.terms:
             base *= 1.1
