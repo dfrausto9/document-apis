@@ -335,3 +335,61 @@ def test_mostly_empty_grid_is_not_a_table():
     doc.build([Paragraph("Figure", getSampleStyleSheet()["Title"]), t])
     body = post("/pdf/info", buf.getvalue()).json()
     assert body["table_count"] == 0
+
+
+def make_alternating_headers_pdf():
+    """Even pages carry the book title, odd pages carry the chapter title.
+    Chapter 2 is short (3 pages), so its header is on far less than 40% of pages."""
+    buf = io.BytesIO()
+    c = canvas.Canvas(buf, pagesize=letter)
+    chapters = [("The Long Road", 8), ("A Short Visit", 3), ("Home Again", 8)]
+    page = 0
+    for title, pages in chapters:
+        for k in range(pages):
+            page += 1
+            c.setFont("Helvetica", 9)
+            c.drawString(72, 750, "Travels of the Northern Coast" if page % 2 == 0 else title)
+            c.setFont("Helvetica", 12)
+            y = 700
+            for line in range(6):
+                c.drawString(72, y, f"On page {page} the travellers walked on and wrote line {line} in their book.")
+                y -= 15
+            c.setFont("Helvetica", 9)
+            c.drawString(300, 40, str(page))
+            c.showPage()
+    c.save()
+    return buf.getvalue()
+
+
+def test_alternating_and_short_chapter_headers_are_removed():
+    body = post("/pdf/read", make_alternating_headers_pdf(), words_per_page=5000).json()
+    text = body["text"]
+    assert "Travels of the Northern Coast" not in text
+    assert "The Long Road" not in text
+    assert "A Short Visit" not in text
+    assert "Home Again" not in text
+    assert "On page 10 the travellers" in text
+
+
+def make_compound_hyphen_pdf():
+    buf = io.BytesIO()
+    c = canvas.Canvas(buf, pagesize=letter)
+    c.setFont("Helvetica", 12)
+    lines = [
+        "The team built a state-of-the-",
+        "art reader that also joins words that are bro-",
+        "ken across lines without losing real hyphens.",
+    ]
+    y = 700
+    for line in lines:
+        c.drawString(72, y, line)
+        y -= 15
+    c.save()
+    return buf.getvalue()
+
+
+def test_compound_words_keep_their_hyphens():
+    body = post("/pdf/read", make_compound_hyphen_pdf()).json()
+    assert "state-of-the-art reader" in body["text"]
+    assert "broken across" in body["text"]
+    assert body["cleaned"]["hyphens_fixed"] == 1
