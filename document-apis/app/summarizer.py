@@ -219,8 +219,31 @@ def _score(sentences: list[_Sentence], sections: list[dict]) -> Counter:
             base *= 0.75                      # very long sentences make poor summaries
         if s.text.endswith("?"):
             base *= 0.8
+        base *= _quality(s.text)
         s.score = base
     return freq
+
+
+_SECTION_NUM = re.compile(r"^\s*(\d+(\.\d+)+|[IVX]+\.)\s")
+_END_OK = re.compile(r"[.!?][\"'”’)\]]*$")
+
+
+def _quality(text: str) -> float:
+    """Push down things that aren't real prose: table rows, figure labels, numbered
+    headings run into a sentence, and fragments with no ending punctuation."""
+    tokens = text.split()
+    numeric = sum(1 for t in tokens if any(ch.isdigit() for ch in t))
+    letters = sum(ch.isalpha() for ch in text)
+    factor = 1.0
+    if tokens and numeric / len(tokens) > 0.25:
+        factor *= 0.2
+    if letters < 0.6 * len(text.replace(" ", "")):
+        factor *= 0.3
+    if not _END_OK.search(text):
+        factor *= 0.35
+    if _SECTION_NUM.match(text):
+        factor *= 0.3
+    return factor
 
 
 def _pick(sentences: list[_Sentence], n: int) -> list[_Sentence]:
