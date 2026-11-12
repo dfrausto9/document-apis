@@ -198,6 +198,14 @@ _CHAPTER_WORD = re.compile(
 )
 _END_PUNCT = tuple('.!?:;"”’)')
 EDGE_LINES = 2
+# Word gaps are measured relative to font size. A fixed 3pt gap glues words
+# together in tightly set PDFs (LaTeX papers, justified text).
+X_TOL_RATIO = 0.15
+
+
+def _upright(page):
+    """Drop rotated/vertical text such as figure labels; it only adds noise."""
+    return page.filter(lambda o: o.get("object_type") != "char" or o.get("upright", True))
 
 
 def _norm_repeat(text: str) -> str:
@@ -241,9 +249,12 @@ def _extract_blocks(pdf) -> tuple[list[Block], Counter, float]:
     raw_pages: list[list[dict]] = []
     all_sizes: list[float] = []
 
-    for page in pdf.pages:
+    for raw_page in pdf.pages:
+        page = _upright(raw_page)
         lines = []
-        for ln in page.extract_text_lines(layout=False, strip=True, return_chars=True):
+        for ln in page.extract_text_lines(
+            layout=False, strip=True, return_chars=True, x_tolerance_ratio=X_TOL_RATIO
+        ):
             text = _clean_chars(ln["text"])
             if not text:
                 continue
@@ -252,7 +263,7 @@ def _extract_blocks(pdf) -> tuple[list[Block], Counter, float]:
                           "x0": ln["x0"], "x1": ln["x1"], "size": size})
             all_sizes.extend([size] * max(1, len(text) // 20))
         raw_pages.append(lines)
-        page.flush_cache()
+        raw_page.flush_cache()
 
     body = statistics.median(all_sizes) if all_sizes else 0.0
 
@@ -489,8 +500,10 @@ def _metadata(pdf, blocks: list[Block]) -> dict:
     raw = pdf.metadata or {}
     title = _meta_text(raw.get("Title"))
     if not title or _JUNK_TITLE.match(title):
-        first_heading = next((b.text for b in blocks[:15] if b.kind == "heading"), None)
-        title = first_heading or title
+        early = [b for b in blocks if b.page <= 2 and b.kind == "heading" and len(b.text) <= 150]
+        if early:
+            title = max(early, key=lambda b: b.size).text
+
     return {
         "title": title,
         "author": _meta_text(raw.get("Author")),
@@ -571,19 +584,23 @@ def _parse_tables(data: bytes, first: int, last: int) -> list[dict]:
     out = []
     with _open(data) as pdf:
         for page_no in range(first, min(last, len(pdf.pages)) + 1):
-            page = pdf.pages[page_no - 1]
-            for t in page.extract_tables():
+            raw_page = pdf.pages[page_no - 1]
+            page = _upright(raw_page)
+            for t in page.extract_tables({"text_x_tolerance": 1.5}):
                 rows = [[_clean_chars(c or "") for c in row] for row in t if row]
                 rows = [r for r in rows if any(r)]
                 if len(rows) < 2:
                     continue
+                cells = [c for r in rows for c in r]
+                if sum(1 for c in cells if c) / len(cells) < 0.4:
+                    continue  # mostly empty grid: a figure or layout box, not a table
                 out.append({
                     "page": page_no,
                     "rows": len(rows),
                     "columns": max(len(r) for r in rows),
                     "data": rows,
                 })
-            page.flush_cache()
+            raw_page.flush_cache()
     return out
 
 
@@ -704,6 +721,8 @@ def _chapters_response(doc: ParsedDoc, chapter: int | None, fmt: str) -> dict:
 
 
 def _parse_range(spec: str | None, page_count: int) -> tuple[int, int]:
+    if spec is not None and spec.strip().lower() in ("", "{}", "null", "none", "all"):
+        spec = None
     if not spec:
         return 1, min(page_count, MAX_TABLE_PAGES)
     m = re.fullmatch(r"\s*(\d+)\s*(?:-\s*(\d+))?\s*", spec)
