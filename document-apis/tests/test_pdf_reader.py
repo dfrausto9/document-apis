@@ -279,3 +279,59 @@ def test_url_input_and_cache(monkeypatch):
     c = client.get("/pdf/info", params={"url": u})
     assert c.status_code == 200
     assert len(calls) == 2
+
+
+# ------------------------------------------------- real-world layout quirks
+
+def make_tight_pdf():
+    """Words placed one by one with small gaps, like LaTeX/justified text."""
+    from reportlab.pdfbase.pdfmetrics import stringWidth
+
+    buf = io.BytesIO()
+    c = canvas.Canvas(buf, pagesize=letter)
+    c.setFont("Times-Roman", 10)
+    y = 700
+    for _ in range(3):
+        x = 72
+        for w in "The dominant sequence transduction models are based on complex networks.".split():
+            c.drawString(x, y, w)
+            x += stringWidth(w, "Times-Roman", 10) + 2.2
+        y -= 30
+    # A rotated figure label that should not end up in the text.
+    c.saveState()
+    c.translate(500, 400)
+    c.rotate(90)
+    c.drawString(0, 0, "ROTATED FIGURE LABEL")
+    c.restoreState()
+    c.save()
+    return buf.getvalue()
+
+
+def test_tight_word_spacing_keeps_spaces():
+    body = post("/pdf/read", make_tight_pdf()).json()
+    assert "The dominant sequence transduction models are based on complex networks." in body["text"]
+    assert body["word_count"] == 30
+
+
+def test_rotated_text_is_ignored():
+    body = post("/pdf/read", make_tight_pdf()).json()
+    assert "ROTATED" not in body["text"] and "LEBAL" not in body["text"]
+
+
+def test_table_pages_placeholder_is_ignored():
+    for placeholder in ("{}", "null", ""):
+        r = post("/pdf/info", make_table_pdf(), table_pages=placeholder)
+        assert r.status_code == 200, (placeholder, r.text)
+        assert r.json()["table_count"] == 1
+
+
+def test_mostly_empty_grid_is_not_a_table():
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=letter)
+    data = [[""] * 8 for _ in range(6)]
+    data[2][3] = "x"
+    t = Table(data, colWidths=40, rowHeights=20)
+    t.setStyle(TableStyle([("GRID", (0, 0), (-1, -1), 0.5, colors.black)]))
+    doc.build([Paragraph("Figure", getSampleStyleSheet()["Title"]), t])
+    body = post("/pdf/info", buf.getvalue()).json()
+    assert body["table_count"] == 0
