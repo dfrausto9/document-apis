@@ -1,9 +1,9 @@
 # Document APIs
 
 One server for three document APIs (each its own RapidAPI listing):
-1. **Public Domain Book Finder** (live first): `/search`, `/book/{id}`, `/read/{id}`
-2. Clean PDF Reader (coming next)
-3. Doc Summarizer / Chapter Splitter (coming last)
+1. **Public Domain Book Finder**: `/search`, `/book/{id}`, `/read/{id}`
+2. **Clean PDF Reader**: `/pdf/read`, `/pdf/chapters`, `/pdf/info`
+3. **Doc Summarizer**: `/summarize/text`, `/summarize/url`, `/summarize/file`
 
 ## Public Domain Book Finder API
 
@@ -36,6 +36,25 @@ Gives the details and every free format for one book. Example ids: `gutenberg:21
 
 ### `GET /read/{id}?page=1&words_per_page=900`
 The clean reader, for Project Gutenberg books. It removes the license header and footer, re-joins the broken line wraps into real paragraphs, lists the chapters, and serves the book a page at a time.
+
+## Doc Summarizer API
+
+Summarize any text, web page or PDF. It picks the most important sentences straight from the
+document (extractive summarizing), so it needs no AI model, costs nothing extra to run and never
+adds anything that isn't in the text.
+
+| Endpoint | Input |
+|---|---|
+| `POST /summarize/text` | JSON: `{"text": "...", "length": "short"}` |
+| `GET /summarize/url?url=...` | A web page, a PDF link or a plain-text link |
+| `POST /summarize/file` | Multipart upload: a PDF, `.txt` or `.md` file |
+
+Options: `length` (`short` 3 / `medium` 5 / `long` 8 sentences), `sentences` (1–30, overrides
+length), `key_points` (0–15, default 5), `keywords` (0–30, default 10), `by_section` (default true).
+
+Every response has `summary`, `key_points`, `keywords`, `word_count`, `reading_time_minutes` and,
+when the document has chapters or headings, `sections` with a short summary of each one.
+PDFs reuse the Clean PDF Reader parser, so headers, footers and page numbers are already gone.
 
 ## Run locally
 ```bash
