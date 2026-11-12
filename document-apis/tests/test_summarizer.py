@@ -201,3 +201,32 @@ def test_table_rows_and_numbered_headings_are_avoided():
     picked = j["summary"] + " " + " ".join(j["key_points"])
     assert "27.3" not in picked and "22.0" not in picked
     assert "3.2.3" not in j["summary"]
+
+
+WIKI = """<html><head><title>Honey bee - Wikipedia</title></head><body>
+<div id="toc" class="toc"><ul><li>1 Etymology and the history of the name</li></ul></div>
+<table class="infobox"><tr><td>Kingdom: Animalia and many other classification facts here</td></tr></table>
+<p>A honey bee is a eusocial flying insect known for building colonies, making honey and keeping large
+perennial nests from wax.<sup class="reference">[1]</sup> Honey bees are the best known members of the
+genus Apis, which includes several species found around the world.[2][3]</p>
+<h2>Behaviour<span class="mw-editsection">[edit]</span></h2>
+<p>Worker bees forage for nectar and pollen across many kilometres, then share the location of the best
+flowers with the rest of the colony through a waggle dance. A strong colony can hold tens of thousands of
+worker bees during the summer months.</p>
+<p>The queen bee lays all of the colony's eggs, and in spring she can lay more than a thousand eggs in a
+single day while the workers care for the growing brood.</p>
+<h2>References</h2>
+<ol class="references"><li>↑ "Bees of the world and their behaviour". Retrieved 2020-01-01. doi:10.1/abc</li>
+<li>↑ "Honey bee colonies report". Retrieved 2021-02-02.</li></ol>
+<h2>External links</h2><ul><li>Honey bee information pages at the national museum website for visitors</li></ul>
+</body></html>"""
+
+
+def test_wikipedia_style_pages_skip_references():
+    title, sections = summarizer.sections_from_html(WIKI)
+    text = " ".join(p for s in sections for p in s["paragraphs"])
+    assert "Retrieved" not in text and "museum" not in text and "Kingdom" not in text
+    assert [s["title"] for s in sections if s["title"]] == ["Behaviour"]
+    j = summarizer.summarize_sections(sections, title=title, sentences=2)
+    assert "[1]" not in j["summary"] and "[2]" not in j["summary"]
+    assert "retrieved" not in j["keywords"] and "doi" not in j["keywords"]
