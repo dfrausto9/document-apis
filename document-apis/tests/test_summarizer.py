@@ -189,3 +189,15 @@ def test_playground_blank_sentences_is_ignored(monkeypatch):
     r = client.post("/summarize/file", files={"file": ("bees.md", ARTICLE.encode(), "text/markdown")},
                     params={"sentences": "abc"})
     assert r.status_code == 400
+
+
+def test_table_rows_and_numbered_headings_are_avoided():
+    text = ARTICLE + (
+        "\n\n## Results\n\n3.2.3 Hive Weights Similarly to other gardens, the hive gained weight all summer. "
+        "Hive A 27.3 38.1 3.3 4.5 1018\n\nHive B 22.0 31.4 2.9 3.8 990\n\n"
+        "The garden hive produced more honey than the rooftop hive in every month we measured."
+    )
+    j = client.post("/summarize/text", json={"text": text, "sentences": 6}).json()
+    picked = j["summary"] + " " + " ".join(j["key_points"])
+    assert "27.3" not in picked and "22.0" not in picked
+    assert "3.2.3" not in j["summary"]
