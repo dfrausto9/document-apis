@@ -179,3 +179,13 @@ def test_file_text_upload():
 def test_file_rejects_binary():
     r = client.post("/summarize/file", files={"file": ("x.bin", b"\x00\x01\x02" * 100, "application/octet-stream")})
     assert r.status_code == 415
+
+
+def test_playground_blank_sentences_is_ignored(monkeypatch):
+    r = client.post("/summarize/file", files={"file": ("bees.md", ARTICLE.encode(), "text/markdown")},
+                    params={"sentences": "{}", "length": "short"})
+    assert r.status_code == 200, r.text
+    assert len(summarizer.split_sentences(r.json()["summary"])) == 3
+    r = client.post("/summarize/file", files={"file": ("bees.md", ARTICLE.encode(), "text/markdown")},
+                    params={"sentences": "abc"})
+    assert r.status_code == 400
