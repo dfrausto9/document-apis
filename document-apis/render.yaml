@@ -13,3 +13,9 @@ services:
         sync: false
       - key: CONTACT_EMAIL
         sync: false
+      - key: AZURE_TRANSLATOR_KEY
+        sync: false
+      - key: AZURE_TRANSLATOR_REGION
+        sync: false
+      - key: AZURE_TRANSLATOR_KEY_MEGA
+        sync: false

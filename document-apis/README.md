@@ -56,6 +56,23 @@ Every response has `summary`, `key_points`, `keywords`, `word_count`, `reading_t
 when the document has chapters or headings, `sections` with a short summary of each one.
 PDFs reuse the Clean PDF Reader parser, so headers, footers and page numbers are already gone.
 
+### Translation (`translate_to`)
+
+Add `translate_to` with a language code (`es`, `fr`, `de`, `ja`, `zh-hans`, ...) to any of the three
+endpoints to get the summary, key points, keywords and section summaries in that language.
+
+- **English document, another language wanted:** only the result is translated.
+- **Document that isn't in English:** the whole document is translated to English first, then
+  summarized. Limit: 30,000 characters (about 10 pages).
+- The response gains a `translation` block: `source_language`, `target_language`, `characters_used`.
+- Translation is for the Pro plan and up. Basic callers get `403 plan_required`; their normal
+  summaries are unaffected.
+- If translation can't run (no key set, or the month's free allowance is used up) the caller gets
+  `503 translation_unavailable`. Requests without `translate_to` keep working.
+
+Translation uses Azure Translator. The free tier gives 2 million characters a month and stops,
+without billing, when they run out.
+
 ## Run locally
 ```bash
 pip install -r requirements.txt -r requirements-dev.txt
@@ -66,3 +83,9 @@ uvicorn app.main:app --reload
 ## Environment variables
 - `RAPIDAPI_PROXY_SECRET`: when set, only requests coming through RapidAPI are accepted (`/health` stays open).
 - `CONTACT_EMAIL`: added to the User-Agent, which Open Library asks for.
+- `AZURE_TRANSLATOR_KEY`: key of the free (F0) Azure Translator resource. Without it, `translate_to` returns 503.
+- `AZURE_TRANSLATOR_REGION`: only if the Azure resource was created in a region, not "Global" (e.g. `westus2`).
+- `AZURE_TRANSLATOR_KEY_MEGA`: optional. Key of a paid (S1) Azure resource. When set, Mega callers use it,
+  can translate documents up to 200,000 characters, and no longer share the free allowance.
+- `MEGA_MONTHLY_CHARS`: optional. Characters one Mega customer may translate per month (default 2,000,000).
+  The count is held in memory and resets if the service restarts, so also set a budget alert in Azure.

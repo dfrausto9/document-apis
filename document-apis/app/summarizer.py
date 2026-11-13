@@ -11,6 +11,10 @@ invent anything that isn't in the document.
 
 Every response has a short summary, key points, keywords, reading time and,
 when the document has chapters or headings, a summary for each section.
+
+Add translate_to (a language code such as es or fr) to get the result in another
+language. A document that isn't in English is translated to English first, then
+summarized. Translation uses Azure Translator; see translator.py.
 """
 
 from __future__ import annotations
@@ -23,11 +27,11 @@ from html.parser import HTMLParser
 from urllib.parse import urljoin
 
 import httpx
-from fastapi import APIRouter, File, Query, UploadFile
+from fastapi import APIRouter, File, Header, Query, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field
 
-from . import pdf_reader
+from . import pdf_reader, translator
 from .pdf_reader import _check_public_host, _fail
 
 router = APIRouter(prefix="/summarize", tags=["Doc Summarizer"])
@@ -577,6 +581,70 @@ def _sections_from_doc(doc) -> list[dict]:
 
 
 # --------------------------------------------------------------------------
+# Translation (optional, see translator.py)
+# --------------------------------------------------------------------------
+
+TRANSLATE_TO = Query(None, description="Language code for the result, e.g. es, fr, de, ja, zh-hans. "
+                                       "Documents that aren't in English are translated first. Pro plans and up.")
+PLAN = Header(None, alias="X-RapidAPI-Subscription", include_in_schema=False)
+CALLER = Header(None, alias="X-RapidAPI-User", include_in_schema=False)
+
+_language = translator.clean_language
+
+
+async def _summarize(sections: list[dict], *, title: str | None, translate_to: str | None,
+                     plan: str | None, user: str | None, **options) -> dict:
+    """Summarize, translating on the way in and/or out when translate_to is set."""
+    to = _language(translate_to)
+    if not to or not sections:
+        return await run_in_threadpool(summarize_sections, sections, title=title, **options)
+
+    access = translator.access_for(plan, user)
+    source, used = "en", 0
+
+    sample = " ".join(p for s in sections for p in s["paragraphs"])[:6000]
+    if not translator.looks_english(sample):
+        texts = [title or ""]
+        for s in sections:
+            texts.append(s["title"] or "")
+            texts += s["paragraphs"]
+        total = sum(len(t) for t in texts)
+        if total > access.doc_chars:
+            raise _fail(413, "too_long_to_translate",
+                        f"Documents that aren't in English can be up to {access.doc_chars:,} characters "
+                        f"when translating. This one has {total:,}.")
+        english, detected, used = await translator.translate(texts, "en", access)
+        title, i, rebuilt = english[0] or None, 1, []
+        for s in sections:
+            n = len(s["paragraphs"])
+            rebuilt.append({"title": english[i] or None, "paragraphs": english[i + 1:i + 1 + n]})
+            i += 1 + n
+        sections, source = rebuilt, detected or "unknown"
+
+    result = await run_in_threadpool(summarize_sections, sections, title=title, **options)
+
+    if to.split("-")[0] != "en":
+        secs = result.get("sections", [])
+        texts = [result["title"] or "", result["summary"], *result["key_points"], *result["keywords"]]
+        for s in secs:
+            texts += [s["title"] or "", s["summary"]]
+        out, _, n = await translator.translate(texts, to, access)
+        used += n
+        kp, kw = len(result["key_points"]), len(result["keywords"])
+        result["title"] = out[0] or None
+        result["summary"] = out[1]
+        result["summary_word_count"] = len(out[1].split())
+        result["key_points"] = out[2:2 + kp]
+        result["keywords"] = out[2 + kp:2 + kp + kw]
+        rest = out[2 + kp + kw:]
+        for j, s in enumerate(secs):
+            s["title"], s["summary"] = rest[2 * j] or None, rest[2 * j + 1]
+
+    result["translation"] = {"source_language": source, "target_language": to, "characters_used": used}
+    return result
+
+
+# --------------------------------------------------------------------------
 # Routes
 # --------------------------------------------------------------------------
 
@@ -596,15 +664,16 @@ class TextIn(BaseModel):
     key_points: int = Field(5, ge=0, le=15)
     keywords: int = Field(10, ge=0, le=30)
     by_section: bool = True
+    translate_to: str | None = Field(None, description="Language code for the result, e.g. es or fr")
 
 
 @router.post("/text", summary="Summarize text you send")
-async def summarize_text(body: TextIn):
+async def summarize_text(body: TextIn, plan: str | None = PLAN, user: str | None = CALLER):
     text = body.text or ""
     if len(text) > MAX_TEXT_CHARS:
         raise _fail(413, "too_large", f"Text can be up to {MAX_TEXT_CHARS:,} characters.")
-    result = await run_in_threadpool(
-        summarize_sections, sections_from_text(text), title=body.title,
+    result = await _summarize(
+        sections_from_text(text), title=body.title, translate_to=body.translate_to, plan=plan, user=user,
         sentences=_options(body.length, body.sentences), key_points=body.key_points,
         keywords=body.keywords, by_section=body.by_section,
     )
@@ -619,6 +688,9 @@ async def summarize_url(
     key_points: int = KEY_POINTS,
     keywords: int = KEYWORDS,
     by_section: bool = BY_SECTION,
+    translate_to: str | None = TRANSLATE_TO,
+    plan: str | None = PLAN,
+    user: str | None = CALLER,
 ):
     data, ctype = await _fetch(url)
     if "pdf" in ctype or data[:5] == b"%PDF-":
@@ -631,9 +703,9 @@ async def summarize_url(
         source = {"type": "text"}
     else:
         raise _fail(415, "unsupported_type", "That link isn't a web page, PDF or text file.")
-    result = await run_in_threadpool(
-        summarize_sections, sections, title=title, sentences=_options(length, sentences),
-        key_points=key_points, keywords=keywords, by_section=by_section,
+    result = await _summarize(
+        sections, title=title, translate_to=translate_to, plan=plan, user=user,
+        sentences=_options(length, sentences), key_points=key_points, keywords=keywords, by_section=by_section,
     )
     return {"source": {**source, "url": url}, **result}
 
@@ -646,6 +718,9 @@ async def summarize_file(
     key_points: int = KEY_POINTS,
     keywords: int = KEYWORDS,
     by_section: bool = BY_SECTION,
+    translate_to: str | None = TRANSLATE_TO,
+    plan: str | None = PLAN,
+    user: str | None = CALLER,
 ):
     data = await pdf_reader._read_upload(file)
     if not data:
@@ -659,8 +734,8 @@ async def summarize_file(
         if b"\x00" in data[:4096]:
             raise _fail(415, "unsupported_type", "Upload a PDF, .txt or .md file.")
         title, sections, source = None, sections_from_text(_decode(data)[:MAX_TEXT_CHARS]), {"type": "text"}
-    result = await run_in_threadpool(
-        summarize_sections, sections, title=title, sentences=_options(length, sentences),
-        key_points=key_points, keywords=keywords, by_section=by_section,
+    result = await _summarize(
+        sections, title=title, translate_to=translate_to, plan=plan, user=user,
+        sentences=_options(length, sentences), key_points=key_points, keywords=keywords, by_section=by_section,
     )
     return {"source": {**source, "filename": file.filename}, **result}
